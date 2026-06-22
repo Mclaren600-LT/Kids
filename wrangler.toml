@@ -1,0 +1,18 @@
+name = "bike-challenge"
+compatibility_date = "2024-09-01"
+pages_build_output_dir = "dist"
+
+# KV namespace for storing the family's state.
+# Create it once with: wrangler kv namespace create bike-challenge-data
+# Then paste the returned `id` below.
+[[kv_namespaces]]
+binding = "DATA"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# Optional preview namespace for `wrangler pages dev`.
+# Create with: wrangler kv namespace create bike-challenge-data --preview
+# preview_id = "REPLACE_WITH_PREVIEW_KV_ID"
+
+# Set FAMILY_PIN as a secret in the Pages dashboard
+# (Settings → Environment variables → Add → Type: Secret)
+# Frontend sends it as VITE_FAMILY_PIN at build time.
