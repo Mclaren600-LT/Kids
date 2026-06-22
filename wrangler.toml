@@ -13,6 +13,6 @@ not_found_handling = "single-page-application"
 # (call it bike-challenge-data), then paste its id below.
 [[kv_namespaces]]
 binding = "DATA"
-id = "4918817b03154a26a0a53d4d8ece71f0"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
 
 # Secrets (FAMILY_PIN, etc.) are set in dashboard under Worker → Settings → Variables and Secrets.

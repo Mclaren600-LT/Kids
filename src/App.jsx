@@ -4,7 +4,7 @@ import {
   Check, X, Plus, Minus, Trophy, Target, History,
   ChevronRight, HandHelping, MessageCircleOff,
   ClipboardCheck, Trash2, Edit3, ArrowLeft,
-  Bike, Gift, Calendar
+  Bike, Gift, Calendar, Frown, ThumbsDown, Ban
 } from "lucide-react";
 import * as storage from "./storage.js";
 
@@ -22,6 +22,12 @@ const DEFAULT_TASKS = [
   { id: "t7", name: "Was kind to brother today", points: 30, type: "daily", icon: "Heart", parentOnly: true },
   { id: "t8", name: "No answering back today", points: 30, type: "daily", icon: "MessageCircleOff", parentOnly: true },
   { id: "t9", name: "Made own decision at shops", points: 20, type: "repeatable", icon: "ClipboardCheck", parentOnly: true },
+];
+
+const DEFAULT_DEDUCTIONS = [
+  { id: "d1", name: "Rude to Mum", points: 20, icon: "Frown" },
+  { id: "d2", name: "Rude to Eli", points: 20, icon: "Frown" },
+  { id: "d3", name: "Rude to Dad", points: 20, icon: "Frown" },
 ];
 
 function todayKey() {
@@ -56,11 +62,12 @@ const DEFAULT_DATA = {
   completedToday: [],
   lastResetDate: "",
   goal: DEFAULT_GOAL,
+  deductions: DEFAULT_DEDUCTIONS,
 };
 
 const ICON_MAP = {
   Utensils, Heart, Sparkles, Home, ShoppingCart, Brush, HandHelping,
-  MessageCircleOff, ClipboardCheck, Trophy, Target, Bike, Gift
+  MessageCircleOff, ClipboardCheck, Trophy, Target, Bike, Gift, Frown, ThumbsDown, Ban
 };
 
 function formatTime(iso) {
@@ -120,6 +127,7 @@ export default function App() {
             saved.lastResetDate = todayKey();
           }
           if (!saved.goal) saved.goal = DEFAULT_GOAL;
+          if (!saved.deductions) saved.deductions = DEFAULT_DEDUCTIONS;
           setData({ ...DEFAULT_DATA, ...saved });
         } else {
           setData({ ...DEFAULT_DATA, lastResetDate: todayKey() });
@@ -386,6 +394,15 @@ function KidView({ data, onRequestTask }) {
           </div>
         </section>
       )}
+
+      {data.deductions && data.deductions.length > 0 && (
+        <section>
+          <SectionHeader>Lose points if you do these</SectionHeader>
+          <div className="space-y-2">
+            {data.deductions.map(d => <DeductionCard key={d.id} d={d} />)}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -416,6 +433,24 @@ function TaskCard({ task, done, doneLabel = "Done today ✓", onTap }) {
         <span className="font-bold text-amber-900 text-xs">{task.points}</span>
       </div>
     </button>
+  );
+}
+
+function DeductionCard({ d }) {
+  const Icon = ICON_MAP[d.icon] || Frown;
+  return (
+    <div className="w-full rounded-xl p-3 border border-rose-200 bg-rose-50 flex items-center gap-3">
+      <div className="p-2 rounded-lg bg-rose-100 shrink-0">
+        <Icon size={20} className="text-rose-700" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="font-medium text-rose-900 text-sm leading-tight truncate">{d.name}</p>
+        <p className="text-[11px] text-rose-700 mt-0.5">Loses points</p>
+      </div>
+      <div className="flex items-center gap-1 bg-rose-200 px-2 py-1 rounded-full shrink-0">
+        <span className="font-bold text-rose-900 text-xs">−{d.points}</span>
+      </div>
+    </div>
   );
 }
 
@@ -592,8 +627,31 @@ function AwardTab({ data, onDirectAward, onDeduct }) {
       </section>
 
       <section className="bg-white border border-rose-200 rounded-2xl p-3">
-        <h3 className="font-semibold text-slate-800 text-sm mb-1 flex items-center gap-2"><Minus size={16} className="text-rose-600" /> Deduct points</h3>
-        <p className="text-[11px] text-slate-500 mb-2">Misbehaviour pushes the bike further away.</p>
+        <h3 className="font-semibold text-slate-800 text-sm mb-1 flex items-center gap-2"><Frown size={16} className="text-rose-600" /> Quick deductions</h3>
+        <p className="text-[11px] text-slate-500 mb-2">Tap to apply. Bike moves further away.</p>
+        <div className="space-y-2">
+          {(data.deductions || []).map(d => {
+            const Icon = ICON_MAP[d.icon] || Frown;
+            return (
+              <button
+                key={d.id}
+                onClick={() => onDeduct(d.points, d.name)}
+                className="w-full text-left rounded-xl p-2.5 border bg-white border-rose-200 active:bg-rose-50 flex items-center gap-2.5 min-h-[60px]"
+              >
+                <div className="p-1.5 rounded-lg bg-rose-50 shrink-0"><Icon size={16} className="text-rose-700" /></div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-slate-800 text-sm leading-tight">{d.name}</p>
+                </div>
+                <span className="text-rose-700 font-bold text-sm shrink-0">−{d.points}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="bg-white border border-rose-200 rounded-2xl p-3">
+        <h3 className="font-semibold text-slate-800 text-sm mb-1 flex items-center gap-2"><Minus size={16} className="text-rose-600" /> Custom deduction</h3>
+        <p className="text-[11px] text-slate-500 mb-2">One-off, not in the list.</p>
         <div className="grid grid-cols-3 gap-2">
           <input type="number" value={deductAmount} onChange={(e) => setDeductAmount(e.target.value)} placeholder="Pts" className="col-span-1 px-2 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-500" />
           <input value={deductReason} onChange={(e) => setDeductReason(e.target.value)} placeholder="Reason" className="col-span-2 px-2 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-500" />
@@ -682,6 +740,86 @@ function ManageTasksTab({ data, setData, showToast }) {
               </div>
               <button onClick={() => startEdit(task)} className="p-2 text-slate-500 active:text-teal-700"><Edit3 size={16} /></button>
               <button onClick={() => deleteTask(task.id)} className="p-2 text-slate-500 active:text-rose-600"><Trash2 size={16} /></button>
+            </div>
+          );
+        })}
+      </div>
+
+      <DeductionsManager data={data} setData={setData} showToast={showToast} />
+    </div>
+  );
+}
+
+function DeductionsManager({ data, setData, showToast }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const blank = { id: "", name: "", points: 20, icon: "Frown" };
+  const [draft, setDraft] = useState(blank);
+
+  const startAdd = () => { setDraft({ ...blank, id: uid() }); setEditing(null); setShowAdd(true); };
+  const startEdit = (d) => { setDraft({ ...d }); setEditing(d.id); setShowAdd(true); };
+
+  const saveItem = () => {
+    if (!draft.name.trim()) { showToast("Name required", "warn"); return; }
+    const list = data.deductions || [];
+    if (editing) setData({ ...data, deductions: list.map(x => x.id === editing ? draft : x) });
+    else setData({ ...data, deductions: [...list, draft] });
+    setShowAdd(false); setEditing(null);
+    showToast("Deduction saved", "success");
+  };
+
+  const deleteItem = (id) => {
+    if (!confirm("Delete this deduction?")) return;
+    setData({ ...data, deductions: (data.deductions || []).filter(x => x.id !== id) });
+    showToast("Deduction deleted", "warn");
+  };
+
+  return (
+    <div className="space-y-2 mt-5 pt-4 border-t border-slate-200">
+      <h3 className="text-[11px] font-bold text-rose-600 uppercase tracking-wider px-1 mb-1">Deductions</h3>
+
+      <button onClick={startAdd} className="w-full bg-rose-600 active:bg-rose-700 text-white font-semibold py-2.5 rounded-xl flex items-center justify-center gap-2 text-sm">
+        <Plus size={16} /> Add new deduction
+      </button>
+
+      {showAdd && (
+        <div className="bg-white border-2 border-rose-300 rounded-2xl p-3 space-y-2.5">
+          <h3 className="font-semibold text-slate-800 text-sm">{editing ? "Edit deduction" : "New deduction"}</h3>
+          <div>
+            <label className="text-[11px] text-slate-500 block mb-1">Name</label>
+            <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" placeholder="e.g. Yelling" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[11px] text-slate-500 block mb-1">Points to lose</label>
+              <input type="number" value={draft.points} onChange={(e) => setDraft({ ...draft, points: parseInt(e.target.value) || 0 })} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" />
+            </div>
+            <div>
+              <label className="text-[11px] text-slate-500 block mb-1">Icon</label>
+              <select value={draft.icon} onChange={(e) => setDraft({ ...draft, icon: e.target.value })} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm">
+                {Object.keys(ICON_MAP).map(name => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={saveItem} className="flex-1 bg-rose-600 active:bg-rose-700 text-white font-semibold py-2 rounded-lg text-sm">Save</button>
+            <button onClick={() => { setShowAdd(false); setEditing(null); }} className="flex-1 bg-white border border-slate-300 text-slate-700 font-medium py-2 rounded-lg text-sm">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {(data.deductions || []).map(d => {
+          const Icon = ICON_MAP[d.icon] || Frown;
+          return (
+            <div key={d.id} className="bg-white border border-rose-200 rounded-xl p-2.5 flex items-center gap-2.5">
+              <div className="p-1.5 rounded-lg bg-rose-50 shrink-0"><Icon size={16} className="text-rose-700" /></div>
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-slate-800 text-sm truncate">{d.name}</p>
+                <p className="text-[11px] text-rose-700">−{d.points} pts</p>
+              </div>
+              <button onClick={() => startEdit(d)} className="p-2 text-slate-500 active:text-teal-700"><Edit3 size={16} /></button>
+              <button onClick={() => deleteItem(d.id)} className="p-2 text-slate-500 active:text-rose-600"><Trash2 size={16} /></button>
             </div>
           );
         })}
