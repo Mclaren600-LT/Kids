@@ -1,18 +1,18 @@
 name = "bike-challenge"
-compatibility_date = "2024-09-01"
-pages_build_output_dir = "dist"
+main = "worker-src/index.js"
+compatibility_date = "2024-09-23"
 
-# KV namespace for storing the family's state.
-# Create it once with: wrangler kv namespace create bike-challenge-data
-# Then paste the returned `id` below.
+# Static assets — the Vite build output in ./dist is served by the Worker.
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# KV for storing the family's state.
+# Create the namespace in dashboard: Storage & Databases → KV → Create namespace
+# (call it bike-challenge-data), then paste its id below.
 [[kv_namespaces]]
 binding = "DATA"
 id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
 
-# Optional preview namespace for `wrangler pages dev`.
-# Create with: wrangler kv namespace create bike-challenge-data --preview
-# preview_id = "REPLACE_WITH_PREVIEW_KV_ID"
-
-# Set FAMILY_PIN as a secret in the Pages dashboard
-# (Settings → Environment variables → Add → Type: Secret)
-# Frontend sends it as VITE_FAMILY_PIN at build time.
+# Secrets (FAMILY_PIN, etc.) are set in dashboard under Worker → Settings → Variables and Secrets.

@@ -7,8 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "npm run build && wrangler pages deploy dist",
-    "tail": "wrangler pages deployment tail"
+    "deploy": "npm run build && wrangler deploy",
+    "tail": "wrangler tail"
   },
   "dependencies": {
     "lucide-react": "^0.383.0",
