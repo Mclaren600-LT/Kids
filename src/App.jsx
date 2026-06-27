@@ -4,13 +4,16 @@ import {
   Check, X, Plus, Minus, Trophy, Target, History,
   ChevronRight, HandHelping, MessageCircleOff,
   ClipboardCheck, Trash2, Edit3, ArrowLeft,
-  Bike, Gift, Calendar, Frown, ThumbsDown, Ban
+  Bike, Gift, Calendar, Frown, ThumbsDown, Ban,
+  LogOut, User, UserPlus, Users, Shield, KeyRound, AlertCircle
 } from "lucide-react";
 import * as storage from "./storage.js";
 
 const STORAGE_KEY = "bike-challenge-v1";
-
 const DEFAULT_BIKE_IMAGE = "/bike.jpg";
+const HASH_SALT = "bike-challenge-2026:";
+
+// -------------------- Defaults --------------------
 
 const DEFAULT_TASKS = [
   { id: "t1", name: "Ate all my dinner", points: 20, type: "daily", icon: "Utensils", parentOnly: false },
@@ -30,9 +33,7 @@ const DEFAULT_DEDUCTIONS = [
   { id: "d3", name: "Rude to Dad", points: 20, icon: "Frown" },
 ];
 
-function todayKey() {
-  return new Date().toISOString().slice(0, 10);
-}
+function todayKey() { return new Date().toISOString().slice(0, 10); }
 
 function defaultChristmasEndDate() {
   const now = new Date();
@@ -41,43 +42,50 @@ function defaultChristmasEndDate() {
   return `${year}-12-25`;
 }
 
-const DEFAULT_GOAL = {
-  name: "DHZ Electric Dirt Bike",
-  imageUrl: DEFAULT_BIKE_IMAGE,
-  thresholdPct: 60,
-  startDate: new Date().toISOString().slice(0, 10),
-  endDate: defaultChristmasEndDate(),
-  earnedPoints: 0,
-};
+function makeDefaultGoal() {
+  return {
+    name: "DHZ Electric Dirt Bike",
+    imageUrl: DEFAULT_BIKE_IMAGE,
+    thresholdPct: 60,
+    startDate: todayKey(),
+    endDate: defaultChristmasEndDate(),
+    earnedPoints: 0,
+  };
+}
 
-const DEFAULT_DATA = {
-  config: {
-    parentPin: "1234",
-    kidName: "Champ",
-    parentName: "Dad",
-  },
-  tasks: DEFAULT_TASKS,
-  pending: [],
-  history: [],
-  completedToday: [],
-  lastResetDate: "",
-  goal: DEFAULT_GOAL,
-  deductions: DEFAULT_DEDUCTIONS,
-};
+function makeDefaultChildData() {
+  return {
+    tasks: JSON.parse(JSON.stringify(DEFAULT_TASKS)),
+    deductions: JSON.parse(JSON.stringify(DEFAULT_DEDUCTIONS)),
+    pending: [],
+    history: [],
+    completedToday: [],
+    lastResetDate: todayKey(),
+    goal: makeDefaultGoal(),
+  };
+}
 
 const ICON_MAP = {
   Utensils, Heart, Sparkles, Home, ShoppingCart, Brush, HandHelping,
-  MessageCircleOff, ClipboardCheck, Trophy, Target, Bike, Gift, Frown, ThumbsDown, Ban
+  MessageCircleOff, ClipboardCheck, Trophy, Target, Bike, Gift,
+  Frown, ThumbsDown, Ban
 };
+
+// -------------------- Helpers --------------------
 
 function formatTime(iso) {
   if (!iso) return "";
-  const d = new Date(iso);
-  return d.toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+  return new Date(iso).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 }
 
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
+function uid() { return Math.random().toString(36).slice(2, 10); }
+
+async function hashPassword(plain) {
+  if (!plain) return "";
+  const encoder = new TextEncoder();
+  const buffer = encoder.encode(HASH_SALT + plain);
+  const hash = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
 function bump(goal, delta) {
@@ -85,65 +93,96 @@ function bump(goal, delta) {
   return { ...goal, earnedPoints: Math.max(0, (goal.earnedPoints || 0) + delta) };
 }
 
-function daysBetween(startISO, endISO) {
-  return Math.max(1, Math.ceil((new Date(endISO) - new Date(startISO)) / 86400000));
-}
-
-function daysRemaining(endISO) {
-  return Math.max(0, Math.ceil((new Date(endISO) - new Date()) / 86400000));
-}
+function daysBetween(a, b) { return Math.max(1, Math.ceil((new Date(b) - new Date(a)) / 86400000)); }
+function daysRemaining(end) { return Math.max(0, Math.ceil((new Date(end) - new Date()) / 86400000)); }
 
 function calcStats(goal, tasks) {
   if (!goal) return null;
   const days = daysBetween(goal.startDate, goal.endDate);
-  const ptsPerDay = tasks.filter(t => t.type === "daily").reduce((s, t) => s + (t.points || 0), 0);
+  const ptsPerDay = (tasks || []).filter(t => t.type === "daily").reduce((s, t) => s + (t.points || 0), 0);
   const totalAvailable = ptsPerDay * days;
   const threshold = Math.max(1, Math.ceil(totalAvailable * (goal.thresholdPct / 100)));
   const earned = Math.max(0, goal.earnedPoints || 0);
   const pct = Math.min(100, (earned / threshold) * 100);
-  const won = earned >= threshold;
-  const remaining = Math.max(0, threshold - earned);
-  return { days, totalAvailable, threshold, earned, pct, won, remaining, ptsPerDay };
+  return { days, totalAvailable, threshold, earned, pct, won: earned >= threshold, remaining: Math.max(0, threshold - earned), ptsPerDay };
 }
 
+// -------------------- Migration --------------------
+
+async function migrateIfNeeded(blob) {
+  if (blob.children && blob.admin) return blob; // already new format
+  // Old single-child format: rebuild as multi-user
+  const oldKidName = blob.config?.kidName || "Champ";
+  const childData = {
+    tasks: blob.tasks || JSON.parse(JSON.stringify(DEFAULT_TASKS)),
+    deductions: blob.deductions || JSON.parse(JSON.stringify(DEFAULT_DEDUCTIONS)),
+    pending: blob.pending || [],
+    history: blob.history || [],
+    completedToday: blob.completedToday || [],
+    lastResetDate: blob.lastResetDate || todayKey(),
+    goal: blob.goal || makeDefaultGoal(),
+  };
+  return {
+    admin: {
+      username: "admin",
+      passwordHash: await hashPassword("admin"),
+    },
+    children: [{
+      id: uid(),
+      username: oldKidName.toLowerCase().replace(/[^a-z0-9]/g, "") || "kid",
+      passwordHash: await hashPassword("password"),
+      displayName: oldKidName,
+      data: childData,
+    }],
+  };
+}
+
+async function initFresh() {
+  return {
+    admin: { username: "admin", passwordHash: await hashPassword("admin") },
+    children: [],
+  };
+}
+
+// -------------------- Main App --------------------
+
 export default function App() {
-  const [data, setData] = useState(DEFAULT_DATA);
+  const [data, setData] = useState(null);
   const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState("kid");
-  const [parentUnlocked, setParentUnlocked] = useState(false);
-  const [pinInput, setPinInput] = useState("");
-  const [pinError, setPinError] = useState("");
-  const [parentTab, setParentTab] = useState("pending");
+  const [session, setSession] = useState(null); // null | { role: 'admin' } | { role: 'child', childId }
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
     (async () => {
       try {
         const result = await storage.get(STORAGE_KEY);
-        if (result) {
-          const saved = JSON.parse(result.value);
-          if (saved.lastResetDate !== todayKey()) {
-            saved.completedToday = [];
-            saved.lastResetDate = todayKey();
-          }
-          if (!saved.goal) saved.goal = DEFAULT_GOAL;
-          if (!saved.deductions) saved.deductions = DEFAULT_DEDUCTIONS;
-          setData({ ...DEFAULT_DATA, ...saved });
+        let blob;
+        if (result && result.value) {
+          blob = JSON.parse(result.value);
+          blob = await migrateIfNeeded(blob);
         } else {
-          setData({ ...DEFAULT_DATA, lastResetDate: todayKey() });
+          blob = await initFresh();
         }
+        // Daily reset per child
+        const today = todayKey();
+        blob.children = blob.children.map(c => {
+          if (c.data.lastResetDate !== today) {
+            return { ...c, data: { ...c.data, completedToday: [], lastResetDate: today } };
+          }
+          return c;
+        });
+        setData(blob);
       } catch (e) {
-        setData({ ...DEFAULT_DATA, lastResetDate: todayKey() });
+        console.error("load failed", e);
+        setData(await initFresh());
       }
       setLoaded(true);
     })();
   }, []);
 
   useEffect(() => {
-    if (!loaded) return;
-    (async () => {
-      try { await storage.set(STORAGE_KEY, JSON.stringify(data)); } catch (e) {}
-    })();
+    if (!loaded || !data) return;
+    storage.set(STORAGE_KEY, JSON.stringify(data));
   }, [data, loaded]);
 
   const showToast = (msg, kind = "info") => {
@@ -151,27 +190,380 @@ export default function App() {
     setTimeout(() => setToast(null), 2500);
   };
 
-  const requestTask = (task) => {
-    if (task.parentOnly) return;
-    if (task.type === "daily" && data.completedToday.includes(task.id)) {
-      showToast("Already submitted today", "warn"); return;
+  if (!loaded || !data) {
+    return <div className="min-h-screen bg-slate-50 flex items-center justify-center"><div className="text-slate-500">Loading...</div></div>;
+  }
+
+  let body;
+  if (!session) {
+    body = <LoginView data={data} onLogin={setSession} />;
+  } else if (session.role === "admin") {
+    body = <AdminApp data={data} setData={setData} onLogout={() => setSession(null)} showToast={showToast} />;
+  } else if (session.role === "child") {
+    const child = data.children.find(c => c.id === session.childId);
+    if (!child) {
+      setSession(null);
+      body = <div />;
+    } else {
+      const updateChildData = (newChildData) => {
+        setData({
+          ...data,
+          children: data.children.map(c => c.id === child.id ? { ...c, data: newChildData } : c),
+        });
+      };
+      body = <ChildApp child={child} setChildData={updateChildData} onLogout={() => setSession(null)} showToast={showToast} />;
     }
-    if (data.pending.some(p => p.taskId === task.id)) {
-      showToast("Already waiting for approval", "warn"); return;
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 font-sans">
+      <div className="max-w-md mx-auto px-3 pt-3 pb-20 sm:px-4 sm:max-w-2xl">
+        {body}
+        {toast && (
+          <div className={`fixed bottom-4 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-full shadow-lg text-white text-sm font-medium z-50 max-w-[90%] text-center ${
+            toast.kind === "success" ? "bg-emerald-600" :
+            toast.kind === "warn" ? "bg-amber-600" : "bg-slate-700"
+          }`}>{toast.msg}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// -------------------- Login --------------------
+
+function LoginView({ data, onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!username || !password) { setError("Enter username and password"); return; }
+    setBusy(true);
+    try {
+      const hash = await hashPassword(password);
+      const u = username.trim().toLowerCase();
+      if (u === data.admin.username.toLowerCase() && hash === data.admin.passwordHash) {
+        onLogin({ role: "admin" });
+        return;
+      }
+      const child = data.children.find(c => c.username.toLowerCase() === u && c.passwordHash === hash);
+      if (child) { onLogin({ role: "child", childId: child.id }); return; }
+      setError("Wrong username or password");
+    } finally {
+      setBusy(false);
     }
-    const pendingItem = { id: uid(), taskId: task.id, taskName: task.name, points: task.points, requestedAt: new Date().toISOString() };
-    const newCompleted = task.type === "daily" ? [...data.completedToday, task.id] : data.completedToday;
-    setData({ ...data, pending: [...data.pending, pendingItem], completedToday: newCompleted });
-    showToast(`Sent to ${data.config.parentName} for approval`, "success");
   };
 
-  const tryUnlock = () => {
-    if (pinInput === data.config.parentPin) {
-      setParentUnlocked(true); setPinInput(""); setPinError("");
-    } else {
-      setPinError("Wrong PIN"); setPinInput("");
+  return (
+    <div className="mt-12">
+      <div className="text-center mb-6">
+        <div className="inline-flex p-3 bg-teal-700 rounded-full mb-3"><Bike size={28} className="text-white" /></div>
+        <h1 className="text-2xl font-bold text-slate-800">Bike Challenge</h1>
+        <p className="text-sm text-slate-500 mt-1">Sign in to keep going</p>
+      </div>
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3 shadow-sm">
+        <div>
+          <label className="text-xs text-slate-500 block mb-1">Username</label>
+          <input
+            value={username}
+            onChange={(e) => { setUsername(e.target.value); setError(""); }}
+            onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+            autoCapitalize="none"
+            autoCorrect="off"
+            className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-teal-500"
+            placeholder="e.g. admin or your name"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-slate-500 block mb-1">Password</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => { setPassword(e.target.value); setError(""); }}
+            onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+            className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-teal-500"
+            placeholder="••••••••"
+          />
+        </div>
+        {error && <p className="text-rose-600 text-sm text-center">{error}</p>}
+        <button
+          onClick={submit}
+          disabled={busy}
+          className="w-full bg-teal-700 active:bg-teal-800 disabled:opacity-50 text-white font-semibold py-3 rounded-xl"
+        >
+          {busy ? "Signing in..." : "Sign in"}
+        </button>
+      </div>
+      {data.children.length === 0 && (
+        <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900">
+          <p className="font-semibold mb-1">First-time setup</p>
+          <p>Default admin login: <span className="font-mono">admin</span> / <span className="font-mono">admin</span> — change it immediately after signing in.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// -------------------- Admin --------------------
+
+function AdminApp({ data, setData, onLogout, showToast }) {
+  const [view, setView] = useState({ kind: "home" }); // home | child | account
+
+  if (view.kind === "child") {
+    const child = data.children.find(c => c.id === view.childId);
+    if (!child) { setView({ kind: "home" }); return null; }
+    const setChildData = (newChildData) => {
+      setData({ ...data, children: data.children.map(c => c.id === child.id ? { ...c, data: newChildData } : c) });
+    };
+    const updateChildMeta = (updates) => {
+      setData({ ...data, children: data.children.map(c => c.id === child.id ? { ...c, ...updates } : c) });
+    };
+    const deleteChild = () => {
+      setData({ ...data, children: data.children.filter(c => c.id !== child.id) });
+      setView({ kind: "home" });
+      showToast(`${child.displayName} removed`, "warn");
+    };
+    return (
+      <ChildAdminPanel
+        child={child}
+        setChildData={setChildData}
+        onBack={() => setView({ kind: "home" })}
+        updateChildMeta={updateChildMeta}
+        deleteChild={deleteChild}
+        showToast={showToast}
+      />
+    );
+  }
+
+  if (view.kind === "account") {
+    return <AdminAccount data={data} setData={setData} onBack={() => setView({ kind: "home" })} showToast={showToast} />;
+  }
+
+  return <AdminHome data={data} setData={setData} onLogout={onLogout} setView={setView} showToast={showToast} />;
+}
+
+function AdminHome({ data, setData, onLogout, setView, showToast }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const allPending = data.children.flatMap(c => c.data.pending.map(p => ({ ...p, _childId: c.id, _childName: c.displayName })));
+
+  return (
+    <div className="space-y-4">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Shield size={20} className="text-teal-700" /> Admin</h1>
+          <p className="text-xs text-slate-500">Manage children and approvals</p>
+        </div>
+        <button onClick={onLogout} className="p-2.5 rounded-full bg-white border border-slate-200 active:bg-slate-100" aria-label="Log out">
+          <LogOut size={18} className="text-slate-600" />
+        </button>
+      </header>
+
+      {allPending.length > 0 && (
+        <section>
+          <h2 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 px-1">Pending approvals ({allPending.length})</h2>
+          <div className="space-y-2">
+            {allPending.map(p => (
+              <button
+                key={p.id}
+                onClick={() => setView({ kind: "child", childId: p._childId })}
+                className="w-full text-left bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center justify-between active:bg-amber-100"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-amber-900 text-sm truncate">{p.taskName}</p>
+                  <p className="text-[11px] text-amber-700">{p._childName} · {formatTime(p.requestedAt)}</p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 ml-2">
+                  <span className="text-amber-700 font-bold text-sm">+{p.points}</span>
+                  <ChevronRight size={16} className="text-amber-600" />
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section>
+        <h2 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 px-1 flex items-center gap-1"><Users size={12} /> Children ({data.children.length})</h2>
+        {data.children.length === 0 && !showAdd && (
+          <div className="bg-white rounded-2xl p-6 text-center border border-slate-200">
+            <UserPlus size={32} className="text-slate-300 mx-auto mb-2" />
+            <p className="text-slate-500 text-sm mb-3">No children yet</p>
+            <button onClick={() => setShowAdd(true)} className="bg-teal-700 active:bg-teal-800 text-white font-semibold py-2 px-4 rounded-lg text-sm">Add your first child</button>
+          </div>
+        )}
+        <div className="space-y-2">
+          {data.children.map(c => {
+            const stats = calcStats(c.data.goal, c.data.tasks);
+            const pendingCount = c.data.pending.length;
+            return (
+              <button
+                key={c.id}
+                onClick={() => setView({ kind: "child", childId: c.id })}
+                className="w-full text-left bg-white border border-slate-200 rounded-xl p-3 active:bg-slate-50"
+              >
+                <div className="flex items-center gap-3">
+                  {c.data.goal?.imageUrl && (
+                    <img src={c.data.goal.imageUrl} alt="" className="w-12 h-12 object-contain rounded-lg bg-slate-50 shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="font-semibold text-slate-800 text-sm truncate">{c.displayName}</p>
+                      {pendingCount > 0 && (
+                        <span className="text-[10px] bg-rose-500 text-white px-1.5 py-0.5 rounded-full shrink-0">{pendingCount} pending</span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500">@{c.username}</p>
+                    {stats && (
+                      <>
+                        <div className="w-full bg-slate-100 rounded-full h-1.5 mt-1.5">
+                          <div className="h-full bg-gradient-to-r from-teal-500 to-emerald-500 rounded-full" style={{ width: `${stats.pct}%` }} />
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-1">{stats.earned.toLocaleString()} / {stats.threshold.toLocaleString()} ({Math.round(stats.pct)}%)</p>
+                      </>
+                    )}
+                  </div>
+                  <ChevronRight size={18} className="text-slate-400 shrink-0" />
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {showAdd ? (
+          <AddChildForm data={data} setData={setData} onDone={() => setShowAdd(false)} showToast={showToast} />
+        ) : (
+          data.children.length > 0 && (
+            <button onClick={() => setShowAdd(true)} className="w-full mt-2 bg-teal-700 active:bg-teal-800 text-white font-semibold py-2.5 rounded-xl flex items-center justify-center gap-2 text-sm">
+              <UserPlus size={16} /> Add another child
+            </button>
+          )
+        )}
+      </section>
+
+      <section>
+        <button onClick={() => setView({ kind: "account" })} className="w-full bg-white border border-slate-200 rounded-xl p-3 flex items-center gap-3 active:bg-slate-50">
+          <KeyRound size={18} className="text-slate-600" />
+          <span className="font-medium text-slate-800 text-sm flex-1 text-left">My admin account</span>
+          <ChevronRight size={18} className="text-slate-400" />
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function AddChildForm({ data, setData, onDone, showToast }) {
+  const [displayName, setDisplayName] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    const u = username.trim().toLowerCase();
+    if (!displayName.trim() || !u || !password) { showToast("All fields required", "warn"); return; }
+    if (u === data.admin.username.toLowerCase()) { showToast("That username is taken (admin)", "warn"); return; }
+    if (data.children.some(c => c.username.toLowerCase() === u)) { showToast("Username already in use", "warn"); return; }
+    setBusy(true);
+    const passwordHash = await hashPassword(password);
+    const newChild = {
+      id: uid(),
+      username: u,
+      passwordHash,
+      displayName: displayName.trim(),
+      data: makeDefaultChildData(),
+    };
+    setData({ ...data, children: [...data.children, newChild] });
+    setBusy(false);
+    showToast(`${displayName} added`, "success");
+    onDone();
+  };
+
+  return (
+    <div className="mt-2 bg-white border-2 border-teal-300 rounded-2xl p-3 space-y-2.5">
+      <h3 className="font-semibold text-slate-800 text-sm">Add child</h3>
+      <div>
+        <label className="text-[11px] text-slate-500 block mb-1">Display name (shown in greeting)</label>
+        <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" placeholder="e.g. Tom" />
+      </div>
+      <div>
+        <label className="text-[11px] text-slate-500 block mb-1">Username (for login)</label>
+        <input value={username} onChange={(e) => setUsername(e.target.value)} autoCapitalize="none" className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" placeholder="e.g. tom" />
+      </div>
+      <div>
+        <label className="text-[11px] text-slate-500 block mb-1">Password</label>
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" placeholder="Something he can remember" />
+      </div>
+      <div className="flex gap-2">
+        <button onClick={save} disabled={busy} className="flex-1 bg-teal-700 active:bg-teal-800 text-white font-semibold py-2 rounded-lg text-sm disabled:opacity-50">Save</button>
+        <button onClick={onDone} className="flex-1 bg-white border border-slate-300 text-slate-700 font-medium py-2 rounded-lg text-sm">Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function AdminAccount({ data, setData, onBack, showToast }) {
+  const [username, setUsername] = useState(data.admin.username);
+  const [currentPwd, setCurrentPwd] = useState("");
+  const [newPwd, setNewPwd] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const u = username.trim().toLowerCase();
+      if (!u) { showToast("Username required", "warn"); return; }
+      if (data.children.some(c => c.username.toLowerCase() === u)) { showToast("That username is taken by a child", "warn"); return; }
+
+      // If changing password, verify current
+      let passwordHash = data.admin.passwordHash;
+      if (newPwd) {
+        const currentHash = await hashPassword(currentPwd);
+        if (currentHash !== data.admin.passwordHash) { showToast("Current password wrong", "warn"); return; }
+        passwordHash = await hashPassword(newPwd);
+      }
+
+      setData({ ...data, admin: { username: u, passwordHash } });
+      showToast("Admin account updated", "success");
+      onBack();
+    } finally {
+      setBusy(false);
     }
   };
+
+  return (
+    <div className="space-y-4">
+      <header className="flex items-center gap-2">
+        <button onClick={onBack} className="p-2 rounded-full active:bg-slate-100"><ArrowLeft size={18} /></button>
+        <h1 className="text-lg font-bold text-slate-800">My admin account</h1>
+      </header>
+      <section className="bg-white border border-slate-200 rounded-2xl p-3 space-y-2.5">
+        <div>
+          <label className="text-[11px] text-slate-500 block mb-1">Username</label>
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoCapitalize="none" className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" />
+        </div>
+        <hr className="border-slate-200" />
+        <p className="text-[11px] text-slate-500">Leave blank to keep current password</p>
+        <div>
+          <label className="text-[11px] text-slate-500 block mb-1">Current password</label>
+          <input type="password" value={currentPwd} onChange={(e) => setCurrentPwd(e.target.value)} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" />
+        </div>
+        <div>
+          <label className="text-[11px] text-slate-500 block mb-1">New password</label>
+          <input type="password" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" />
+        </div>
+        <button onClick={save} disabled={busy} className="w-full bg-teal-700 active:bg-teal-800 disabled:opacity-50 text-white font-semibold py-2.5 rounded-lg text-sm">Save</button>
+      </section>
+    </div>
+  );
+}
+
+// -------------------- Child Admin Panel (admin viewing a child) --------------------
+
+function ChildAdminPanel({ child, setChildData, onBack, updateChildMeta, deleteChild, showToast }) {
+  const [tab, setTab] = useState("pending");
+  const data = child.data;
+  const setData = setChildData; // alias so existing tab components work
 
   const approvePending = (p) => {
     const h = { id: uid(), type: "earned", taskName: p.taskName, points: p.points, at: new Date().toISOString() };
@@ -216,68 +608,89 @@ export default function App() {
     showToast(`-${amount} pts · bike further away`, "warn");
   };
 
-  if (!loaded) {
-    return <div className="min-h-screen bg-slate-50 flex items-center justify-center"><div className="text-slate-500">Loading...</div></div>;
-  }
+  const stats = calcStats(data.goal, data.tasks);
+  const pendingCount = data.pending.length;
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 font-sans">
-      <div className="max-w-md mx-auto px-3 pt-3 pb-20 sm:px-4 sm:max-w-2xl">
-        <header className="mb-4 flex items-center justify-between">
-          <div className="min-w-0">
-            <h1 className="text-lg sm:text-xl font-bold text-slate-800 truncate">
-              {view === "parent" ? "Parent Panel" : `Hi ${data.config.kidName}!`}
-            </h1>
-            <p className="text-xs text-slate-500">
-              {view === "parent" ? "Manage rewards" : "Tap things you've done"}
-            </p>
+    <div className="space-y-3">
+      <header className="flex items-center gap-2">
+        <button onClick={onBack} className="p-2 rounded-full active:bg-slate-100"><ArrowLeft size={18} /></button>
+        <div className="flex-1 min-w-0">
+          <h1 className="text-lg font-bold text-slate-800 truncate">{child.displayName}</h1>
+          <p className="text-[11px] text-slate-500">@{child.username}</p>
+        </div>
+      </header>
+
+      {stats && (
+        <div className="bg-white border border-slate-200 rounded-xl p-2.5 flex items-center gap-3">
+          {data.goal.imageUrl && <img src={data.goal.imageUrl} alt="" className="w-12 h-12 object-contain rounded-lg bg-slate-50 shrink-0" />}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-baseline justify-between gap-2">
+              <p className="font-semibold text-slate-800 text-sm truncate">{data.goal.name}</p>
+              <p className="text-[11px] text-slate-500 shrink-0">{daysRemaining(data.goal.endDate)}d</p>
+            </div>
+            <div className="w-full bg-slate-100 rounded-full h-2 mt-1">
+              <div className="h-full bg-gradient-to-r from-teal-500 to-emerald-500 rounded-full" style={{ width: `${stats.pct}%` }} />
+            </div>
+            <p className="text-[11px] text-slate-500 mt-1">{stats.earned.toLocaleString()} / {stats.threshold.toLocaleString()} ({Math.round(stats.pct)}%)</p>
           </div>
-          {view === "kid" ? (
-            <button
-              onClick={() => setView("parent")}
-              className="p-2.5 rounded-full bg-white shadow-sm border border-slate-200 text-slate-600 active:bg-slate-100 shrink-0"
-              aria-label="Parent panel"
-            >
-              <Lock size={18} />
-            </button>
-          ) : (
-            <button
-              onClick={() => { setView("kid"); setParentUnlocked(false); }}
-              className="px-3 py-2 rounded-full bg-white shadow-sm border border-slate-200 text-slate-600 active:bg-slate-100 flex items-center gap-1 text-sm shrink-0"
-            >
-              <ArrowLeft size={16} /> Back
-            </button>
-          )}
-        </header>
+        </div>
+      )}
 
-        {view === "kid" && <KidView data={data} onRequestTask={requestTask} />}
-
-        {view === "parent" && !parentUnlocked && (
-          <PinGate pinInput={pinInput} setPinInput={setPinInput} onSubmit={tryUnlock} error={pinError} />
-        )}
-
-        {view === "parent" && parentUnlocked && (
-          <ParentView
-            data={data} setData={setData}
-            tab={parentTab} setTab={setParentTab}
-            onApprove={approvePending} onReject={rejectPending}
-            onDirectAward={directAward} onDeduct={deductPoints}
-            showToast={showToast}
-          />
-        )}
-
-        {toast && (
-          <div className={`fixed bottom-4 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-full shadow-lg text-white text-sm font-medium z-50 max-w-[90%] text-center ${
-            toast.kind === "success" ? "bg-emerald-600" :
-            toast.kind === "warn" ? "bg-amber-600" : "bg-slate-700"
-          }`}>
-            {toast.msg}
-          </div>
-        )}
+      <div className="bg-white rounded-xl border border-slate-200 p-1 flex gap-1 overflow-x-auto -mx-1 px-1">
+        <TabBtn active={tab === "pending"} onClick={() => setTab("pending")} badge={pendingCount}>Approvals</TabBtn>
+        <TabBtn active={tab === "award"} onClick={() => setTab("award")}>Award</TabBtn>
+        <TabBtn active={tab === "manage"} onClick={() => setTab("manage")}>Tasks</TabBtn>
+        <TabBtn active={tab === "history"} onClick={() => setTab("history")}>History</TabBtn>
+        <TabBtn active={tab === "settings"} onClick={() => setTab("settings")}>Settings</TabBtn>
       </div>
+
+      {tab === "pending" && <PendingTab data={data} onApprove={approvePending} onReject={rejectPending} />}
+      {tab === "award" && <AwardTab data={data} onDirectAward={directAward} onDeduct={deductPoints} />}
+      {tab === "manage" && <ManageTasksTab data={data} setData={setData} showToast={showToast} />}
+      {tab === "history" && <HistoryTab data={data} />}
+      {tab === "settings" && <ChildSettingsTab child={child} data={data} setData={setData} updateChildMeta={updateChildMeta} deleteChild={deleteChild} showToast={showToast} />}
     </div>
   );
 }
+
+// -------------------- Child App (kid logged in as themselves) --------------------
+
+function ChildApp({ child, setChildData, onLogout, showToast }) {
+  const data = child.data;
+  const setData = setChildData;
+
+  const requestTask = (task) => {
+    if (task.parentOnly) return;
+    if (task.type === "daily" && data.completedToday.includes(task.id)) {
+      showToast("Already submitted today", "warn"); return;
+    }
+    if (data.pending.some(p => p.taskId === task.id)) {
+      showToast("Already waiting for approval", "warn"); return;
+    }
+    const pendingItem = { id: uid(), taskId: task.id, taskName: task.name, points: task.points, requestedAt: new Date().toISOString() };
+    const newCompleted = task.type === "daily" ? [...data.completedToday, task.id] : data.completedToday;
+    setData({ ...data, pending: [...data.pending, pendingItem], completedToday: newCompleted });
+    showToast("Sent for approval", "success");
+  };
+
+  return (
+    <div>
+      <header className="mb-4 flex items-center justify-between">
+        <div className="min-w-0">
+          <h1 className="text-lg sm:text-xl font-bold text-slate-800 truncate">Hi {child.displayName}!</h1>
+          <p className="text-xs text-slate-500">Tap things you've done</p>
+        </div>
+        <button onClick={onLogout} className="p-2.5 rounded-full bg-white shadow-sm border border-slate-200 text-slate-600 active:bg-slate-100 shrink-0" aria-label="Log out">
+          <LogOut size={18} />
+        </button>
+      </header>
+      <KidView data={data} onRequestTask={requestTask} />
+    </div>
+  );
+}
+
+// -------------------- Shared components (KidView, tabs, cards) --------------------
 
 function GoalHero({ goal, stats }) {
   const daysLeft = daysRemaining(goal.endDate);
@@ -293,47 +706,29 @@ function GoalHero({ goal, stats }) {
   return (
     <div className="rounded-2xl overflow-hidden shadow-md border border-slate-200 bg-white">
       <div className="relative bg-gradient-to-br from-slate-100 to-slate-200 aspect-[5/3]">
-        {goal.imageUrl ? (
-          <img src={goal.imageUrl} alt={goal.name} className="w-full h-full object-contain" />
-        ) : (
+        {goal.imageUrl ? <img src={goal.imageUrl} alt={goal.name} className="w-full h-full object-contain" /> : (
           <div className="w-full h-full flex items-center justify-center"><Gift size={64} className="text-slate-400" /></div>
         )}
-        <div className="absolute top-2 left-2 bg-white/90 backdrop-blur px-2.5 py-1 rounded-full text-[11px] font-semibold text-slate-700 flex items-center gap-1">
-          <Gift size={12} /> Christmas Goal
-        </div>
-        <div className="absolute top-2 right-2 bg-white/90 backdrop-blur px-2.5 py-1 rounded-full text-[11px] font-semibold text-slate-700 flex items-center gap-1">
-          <Calendar size={12} /> {daysLeft}d
-        </div>
+        <div className="absolute top-2 left-2 bg-white/90 backdrop-blur px-2.5 py-1 rounded-full text-[11px] font-semibold text-slate-700 flex items-center gap-1"><Gift size={12} /> Christmas Goal</div>
+        <div className="absolute top-2 right-2 bg-white/90 backdrop-blur px-2.5 py-1 rounded-full text-[11px] font-semibold text-slate-700 flex items-center gap-1"><Calendar size={12} /> {daysLeft}d</div>
       </div>
-
       <div className="p-3 sm:p-4">
         <h2 className="font-bold text-slate-800 text-base sm:text-lg leading-tight">{goal.name}</h2>
-        <p className={`text-xs sm:text-sm font-semibold bg-gradient-to-r ${mood.color} bg-clip-text text-transparent mt-0.5`}>
-          {mood.tag}
-        </p>
-
+        <p className={`text-xs sm:text-sm font-semibold bg-gradient-to-r ${mood.color} bg-clip-text text-transparent mt-0.5`}>{mood.tag}</p>
         <div className="mt-3">
           <div className="flex items-baseline justify-between mb-1">
             <span className="text-xl sm:text-2xl font-bold text-slate-800">{earned.toLocaleString()}</span>
             <span className="text-xs text-slate-500">of {threshold.toLocaleString()} pts</span>
           </div>
           <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
-            <div
-              className={`h-full bg-gradient-to-r ${mood.color} rounded-full transition-all duration-700 ease-out`}
-              style={{ width: `${pct}%` }}
-            />
+            <div className={`h-full bg-gradient-to-r ${mood.color} rounded-full transition-all duration-700 ease-out`} style={{ width: `${pct}%` }} />
           </div>
           <div className="flex justify-between text-[11px] text-slate-500 mt-1">
             <span>{Math.round(pct)}% there</span>
             {!won && <span>{remaining.toLocaleString()} pts to go</span>}
           </div>
         </div>
-
-        {won && (
-          <div className="mt-3 p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-center">
-            <p className="text-emerald-900 font-bold text-sm">🎁 The bike is yours this Christmas!</p>
-          </div>
-        )}
+        {won && <div className="mt-3 p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-center"><p className="text-emerald-900 font-bold text-sm">🎁 The bike is yours this Christmas!</p></div>}
       </div>
     </div>
   );
@@ -383,13 +778,7 @@ function KidView({ data, onRequestTask }) {
           <SectionHeader>Bonus tasks (anytime)</SectionHeader>
           <div className="space-y-2">
             {repeatTasks.map(task => (
-              <TaskCard
-                key={task.id}
-                task={task}
-                done={data.pending.some(p => p.taskId === task.id)}
-                doneLabel="Pending"
-                onTap={() => onRequestTask(task)}
-              />
+              <TaskCard key={task.id} task={task} done={data.pending.some(p => p.taskId === task.id)} doneLabel="Pending" onTap={() => onRequestTask(task)} />
             ))}
           </div>
         </section>
@@ -414,13 +803,9 @@ function SectionHeader({ children }) {
 function TaskCard({ task, done, doneLabel = "Done today ✓", onTap }) {
   const Icon = ICON_MAP[task.icon] || Sparkles;
   return (
-    <button
-      onClick={onTap}
-      disabled={done}
-      className={`w-full text-left rounded-xl p-3 border flex items-center gap-3 min-h-[64px] ${
-        done ? "bg-slate-100 border-slate-200 opacity-60" : "bg-white border-slate-200 active:bg-teal-50 active:border-teal-400"
-      }`}
-    >
+    <button onClick={onTap} disabled={done} className={`w-full text-left rounded-xl p-3 border flex items-center gap-3 min-h-[64px] ${
+      done ? "bg-slate-100 border-slate-200 opacity-60" : "bg-white border-slate-200 active:bg-teal-50 active:border-teal-400"
+    }`}>
       <div className={`p-2 rounded-lg shrink-0 ${done ? "bg-slate-200" : "bg-teal-50"}`}>
         <Icon size={20} className={done ? "text-slate-500" : "text-teal-700"} />
       </div>
@@ -440,9 +825,7 @@ function DeductionCard({ d }) {
   const Icon = ICON_MAP[d.icon] || Frown;
   return (
     <div className="w-full rounded-xl p-3 border border-rose-200 bg-rose-50 flex items-center gap-3">
-      <div className="p-2 rounded-lg bg-rose-100 shrink-0">
-        <Icon size={20} className="text-rose-700" />
-      </div>
+      <div className="p-2 rounded-lg bg-rose-100 shrink-0"><Icon size={20} className="text-rose-700" /></div>
       <div className="flex-1 min-w-0">
         <p className="font-medium text-rose-900 text-sm leading-tight truncate">{d.name}</p>
         <p className="text-[11px] text-rose-700 mt-0.5">Loses points</p>
@@ -454,95 +837,20 @@ function DeductionCard({ d }) {
   );
 }
 
-function PinGate({ pinInput, setPinInput, onSubmit, error }) {
-  return (
-    <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-200 mt-6">
-      <div className="text-center mb-4">
-        <div className="inline-flex p-3 bg-slate-100 rounded-full mb-2"><Lock size={22} className="text-slate-600" /></div>
-        <h2 className="font-bold text-slate-800">Parent PIN required</h2>
-        <p className="text-xs text-slate-500 mt-1">Enter your PIN to manage the challenge</p>
-      </div>
-      <input
-        type="password"
-        inputMode="numeric"
-        value={pinInput}
-        onChange={(e) => setPinInput(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") onSubmit(); }}
-        placeholder="••••"
-        className="w-full px-4 py-3 rounded-xl border border-slate-300 text-center text-2xl tracking-widest focus:outline-none focus:ring-2 focus:ring-teal-500"
-        autoFocus
-      />
-      {error && <p className="text-rose-600 text-sm text-center mt-2">{error}</p>}
-      <button onClick={onSubmit} className="w-full mt-3 bg-teal-700 active:bg-teal-800 text-white font-semibold py-3 rounded-xl">Unlock</button>
-      <p className="text-[11px] text-slate-400 text-center mt-3">Default PIN is 1234 — change it in Settings</p>
-    </div>
-  );
-}
-
-function ParentView({ data, setData, tab, setTab, onApprove, onReject, onDirectAward, onDeduct, showToast }) {
-  const pendingCount = data.pending.length;
-  const stats = calcStats(data.goal, data.tasks);
-  return (
-    <div className="space-y-3">
-      {stats && (
-        <div className="bg-white border border-slate-200 rounded-xl p-2.5 flex items-center gap-3">
-          {data.goal.imageUrl && <img src={data.goal.imageUrl} alt="" className="w-12 h-12 object-contain rounded-lg bg-slate-50 shrink-0" />}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-baseline justify-between gap-2">
-              <p className="font-semibold text-slate-800 text-sm truncate">{data.goal.name}</p>
-              <p className="text-[11px] text-slate-500 shrink-0">{daysRemaining(data.goal.endDate)}d</p>
-            </div>
-            <div className="w-full bg-slate-100 rounded-full h-2 mt-1">
-              <div className="h-full bg-gradient-to-r from-teal-500 to-emerald-500 rounded-full" style={{ width: `${stats.pct}%` }} />
-            </div>
-            <p className="text-[11px] text-slate-500 mt-1">{stats.earned.toLocaleString()} / {stats.threshold.toLocaleString()} ({Math.round(stats.pct)}%)</p>
-          </div>
-        </div>
-      )}
-
-      <div className="bg-white rounded-xl border border-slate-200 p-1 flex gap-1 overflow-x-auto -mx-1 px-1">
-        <TabBtn active={tab === "pending"} onClick={() => setTab("pending")} badge={pendingCount}>Approvals</TabBtn>
-        <TabBtn active={tab === "award"} onClick={() => setTab("award")}>Award</TabBtn>
-        <TabBtn active={tab === "manage"} onClick={() => setTab("manage")}>Tasks</TabBtn>
-        <TabBtn active={tab === "history"} onClick={() => setTab("history")}>History</TabBtn>
-        <TabBtn active={tab === "settings"} onClick={() => setTab("settings")}>Settings</TabBtn>
-      </div>
-
-      {tab === "pending" && <PendingTab data={data} onApprove={onApprove} onReject={onReject} />}
-      {tab === "award" && <AwardTab data={data} onDirectAward={onDirectAward} onDeduct={onDeduct} />}
-      {tab === "manage" && <ManageTasksTab data={data} setData={setData} showToast={showToast} />}
-      {tab === "history" && <HistoryTab data={data} />}
-      {tab === "settings" && <SettingsTab data={data} setData={setData} showToast={showToast} />}
-    </div>
-  );
-}
-
 function TabBtn({ active, onClick, children, badge }) {
   return (
-    <button
-      onClick={onClick}
-      className={`whitespace-nowrap px-3 py-2 text-xs sm:text-sm rounded-lg font-medium relative shrink-0 ${
-        active ? "bg-teal-700 text-white" : "text-slate-600 active:bg-slate-100"
-      }`}
-    >
+    <button onClick={onClick} className={`whitespace-nowrap px-3 py-2 text-xs sm:text-sm rounded-lg font-medium relative shrink-0 ${
+      active ? "bg-teal-700 text-white" : "text-slate-600 active:bg-slate-100"
+    }`}>
       {children}
-      {badge > 0 && (
-        <span className={`ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] rounded-full ${
-          active ? "bg-white text-teal-700" : "bg-rose-500 text-white"
-        }`}>{badge}</span>
-      )}
+      {badge > 0 && <span className={`ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] rounded-full ${active ? "bg-white text-teal-700" : "bg-rose-500 text-white"}`}>{badge}</span>}
     </button>
   );
 }
 
 function PendingTab({ data, onApprove, onReject }) {
   if (data.pending.length === 0) {
-    return (
-      <div className="bg-white rounded-2xl p-6 text-center border border-slate-200">
-        <ClipboardCheck size={32} className="text-slate-300 mx-auto mb-2" />
-        <p className="text-slate-500 text-sm">Nothing waiting for approval</p>
-      </div>
-    );
+    return <div className="bg-white rounded-2xl p-6 text-center border border-slate-200"><ClipboardCheck size={32} className="text-slate-300 mx-auto mb-2" /><p className="text-slate-500 text-sm">Nothing waiting for approval</p></div>;
   }
   return (
     <div className="space-y-2">
@@ -553,12 +861,8 @@ function PendingTab({ data, onApprove, onReject }) {
             <p className="text-[11px] text-slate-500">Submitted {formatTime(p.requestedAt)} · {p.points} pts</p>
           </div>
           <div className="flex gap-2">
-            <button onClick={() => onApprove(p)} className="flex-1 bg-emerald-600 active:bg-emerald-700 text-white font-medium py-2.5 rounded-lg flex items-center justify-center gap-1.5 text-sm">
-              <Check size={16} /> Approve
-            </button>
-            <button onClick={() => onReject(p)} className="flex-1 bg-white border border-slate-300 active:bg-slate-50 text-slate-700 font-medium py-2.5 rounded-lg flex items-center justify-center gap-1.5 text-sm">
-              <X size={16} /> Reject
-            </button>
+            <button onClick={() => onApprove(p)} className="flex-1 bg-emerald-600 active:bg-emerald-700 text-white font-medium py-2.5 rounded-lg flex items-center justify-center gap-1.5 text-sm"><Check size={16} /> Approve</button>
+            <button onClick={() => onReject(p)} className="flex-1 bg-white border border-slate-300 active:bg-slate-50 text-slate-700 font-medium py-2.5 rounded-lg flex items-center justify-center gap-1.5 text-sm"><X size={16} /> Reject</button>
           </div>
         </div>
       ))}
@@ -598,12 +902,7 @@ function AwardTab({ data, onDirectAward, onDeduct }) {
             const Icon = ICON_MAP[task.icon] || Heart;
             const done = task.type === "daily" && data.completedToday.includes(task.id);
             return (
-              <button
-                key={task.id}
-                onClick={() => onDirectAward(task)}
-                disabled={done}
-                className="w-full text-left rounded-xl p-2.5 border bg-white border-slate-200 active:bg-emerald-50 active:border-emerald-400 disabled:opacity-50 flex items-center gap-2.5 min-h-[60px]"
-              >
+              <button key={task.id} onClick={() => onDirectAward(task)} disabled={done} className="w-full text-left rounded-xl p-2.5 border bg-white border-slate-200 active:bg-emerald-50 active:border-emerald-400 disabled:opacity-50 flex items-center gap-2.5 min-h-[60px]">
                 <div className="p-1.5 rounded-lg bg-emerald-50 shrink-0"><Icon size={16} className="text-emerald-700" /></div>
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-slate-800 text-sm leading-tight">{task.name}</p>
@@ -633,15 +932,9 @@ function AwardTab({ data, onDirectAward, onDeduct }) {
           {(data.deductions || []).map(d => {
             const Icon = ICON_MAP[d.icon] || Frown;
             return (
-              <button
-                key={d.id}
-                onClick={() => onDeduct(d.points, d.name)}
-                className="w-full text-left rounded-xl p-2.5 border bg-white border-rose-200 active:bg-rose-50 flex items-center gap-2.5 min-h-[60px]"
-              >
+              <button key={d.id} onClick={() => onDeduct(d.points, d.name)} className="w-full text-left rounded-xl p-2.5 border bg-white border-rose-200 active:bg-rose-50 flex items-center gap-2.5 min-h-[60px]">
                 <div className="p-1.5 rounded-lg bg-rose-50 shrink-0"><Icon size={16} className="text-rose-700" /></div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-slate-800 text-sm leading-tight">{d.name}</p>
-                </div>
+                <div className="flex-1 min-w-0"><p className="font-medium text-slate-800 text-sm leading-tight">{d.name}</p></div>
                 <span className="text-rose-700 font-bold text-sm shrink-0">−{d.points}</span>
               </button>
             );
@@ -777,11 +1070,9 @@ function DeductionsManager({ data, setData, showToast }) {
   return (
     <div className="space-y-2 mt-5 pt-4 border-t border-slate-200">
       <h3 className="text-[11px] font-bold text-rose-600 uppercase tracking-wider px-1 mb-1">Deductions</h3>
-
       <button onClick={startAdd} className="w-full bg-rose-600 active:bg-rose-700 text-white font-semibold py-2.5 rounded-xl flex items-center justify-center gap-2 text-sm">
         <Plus size={16} /> Add new deduction
       </button>
-
       {showAdd && (
         <div className="bg-white border-2 border-rose-300 rounded-2xl p-3 space-y-2.5">
           <h3 className="font-semibold text-slate-800 text-sm">{editing ? "Edit deduction" : "New deduction"}</h3>
@@ -807,7 +1098,6 @@ function DeductionsManager({ data, setData, showToast }) {
           </div>
         </div>
       )}
-
       <div className="space-y-2">
         {(data.deductions || []).map(d => {
           const Icon = ICON_MAP[d.icon] || Frown;
@@ -830,12 +1120,7 @@ function DeductionsManager({ data, setData, showToast }) {
 
 function HistoryTab({ data }) {
   if (data.history.length === 0) {
-    return (
-      <div className="bg-white rounded-2xl p-6 text-center border border-slate-200">
-        <History size={32} className="text-slate-300 mx-auto mb-2" />
-        <p className="text-slate-500 text-sm">No activity yet</p>
-      </div>
-    );
+    return <div className="bg-white rounded-2xl p-6 text-center border border-slate-200"><History size={32} className="text-slate-300 mx-auto mb-2" /><p className="text-slate-500 text-sm">No activity yet</p></div>;
   }
   return (
     <div className="space-y-2">
@@ -845,35 +1130,40 @@ function HistoryTab({ data }) {
             <p className="font-medium text-slate-800 text-sm truncate">{h.taskName}</p>
             <p className="text-[11px] text-slate-500">{formatTime(h.at)}</p>
           </div>
-          <span className={`font-bold text-sm shrink-0 ml-2 ${
-            h.type === "earned" ? "text-emerald-600" :
-            h.type === "deducted" ? "text-rose-600" : "text-slate-500"
-          }`}>{h.points > 0 ? `+${h.points}` : h.points}</span>
+          <span className={`font-bold text-sm shrink-0 ml-2 ${h.type === "earned" ? "text-emerald-600" : h.type === "deducted" ? "text-rose-600" : "text-slate-500"}`}>{h.points > 0 ? `+${h.points}` : h.points}</span>
         </div>
       ))}
     </div>
   );
 }
 
-function SettingsTab({ data, setData, showToast }) {
-  const [kidName, setKidName] = useState(data.config.kidName);
-  const [parentName, setParentName] = useState(data.config.parentName);
-  const [pin, setPin] = useState(data.config.parentPin);
+function ChildSettingsTab({ child, data, setData, updateChildMeta, deleteChild, showToast }) {
+  const [displayName, setDisplayName] = useState(child.displayName);
+  const [username, setUsername] = useState(child.username);
+  const [newPassword, setNewPassword] = useState("");
   const [gName, setGName] = useState(data.goal.name);
   const [gImage, setGImage] = useState(data.goal.imageUrl);
   const [gThreshold, setGThreshold] = useState(data.goal.thresholdPct);
   const [gEndDate, setGEndDate] = useState(data.goal.endDate);
   const [gProgress, setGProgress] = useState(data.goal.earnedPoints || 0);
+  const [busy, setBusy] = useState(false);
 
-  const save = () => {
+  const saveAccount = async () => {
+    setBusy(true);
+    try {
+      const u = username.trim().toLowerCase();
+      if (!displayName.trim() || !u) { showToast("Display name and username required", "warn"); return; }
+      const updates = { displayName: displayName.trim(), username: u };
+      if (newPassword) updates.passwordHash = await hashPassword(newPassword);
+      updateChildMeta(updates);
+      setNewPassword("");
+      showToast("Account updated", "success");
+    } finally { setBusy(false); }
+  };
+
+  const saveGoal = () => {
     setData({
       ...data,
-      config: {
-        ...data.config,
-        kidName: kidName || "Champ",
-        parentName: parentName || "Dad",
-        parentPin: pin || "1234",
-      },
       goal: {
         ...data.goal,
         name: gName || "Christmas Goal",
@@ -882,33 +1172,37 @@ function SettingsTab({ data, setData, showToast }) {
         endDate: gEndDate || defaultChristmasEndDate(),
       },
     });
-    showToast("Settings saved", "success");
+    showToast("Goal updated", "success");
   };
 
-  const resetAll = () => {
-    if (!confirm("Wipe ALL data including bike progress?")) return;
-    if (!confirm("Really sure? Cannot be undone.")) return;
-    setData({ ...DEFAULT_DATA, lastResetDate: todayKey() });
-    showToast("All data reset", "warn");
+  const setScore = () => {
+    setData({ ...data, goal: { ...data.goal, earnedPoints: Math.max(0, parseInt(gProgress) || 0) }});
+    showToast("Score updated", "success");
+  };
+
+  const confirmDelete = () => {
+    if (!confirm(`Delete ${child.displayName} and all their data? Cannot be undone.`)) return;
+    if (!confirm("Really sure?")) return;
+    deleteChild();
   };
 
   return (
     <div className="space-y-3">
       <section className="bg-white border border-slate-200 rounded-2xl p-3 space-y-2.5">
-        <h3 className="font-semibold text-slate-800 text-sm">Names & PIN</h3>
+        <h3 className="font-semibold text-slate-800 text-sm flex items-center gap-2"><User size={16} /> Account</h3>
         <div>
-          <label className="text-[11px] text-slate-500 block mb-1">Kid's name</label>
-          <input value={kidName} onChange={(e) => setKidName(e.target.value)} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" />
+          <label className="text-[11px] text-slate-500 block mb-1">Display name</label>
+          <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" />
         </div>
         <div>
-          <label className="text-[11px] text-slate-500 block mb-1">Your name</label>
-          <input value={parentName} onChange={(e) => setParentName(e.target.value)} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" />
+          <label className="text-[11px] text-slate-500 block mb-1">Username</label>
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoCapitalize="none" className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" />
         </div>
         <div>
-          <label className="text-[11px] text-slate-500 block mb-1">Parent PIN</label>
-          <input type="text" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" />
-          <p className="text-[11px] text-slate-400 mt-1">Change from 1234 to something only you know</p>
+          <label className="text-[11px] text-slate-500 block mb-1">New password (blank = keep current)</label>
+          <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" placeholder="••••••••" />
         </div>
+        <button onClick={saveAccount} disabled={busy} className="w-full bg-teal-700 active:bg-teal-800 disabled:opacity-50 text-white font-semibold py-2.5 rounded-lg text-sm">Save account</button>
       </section>
 
       <section className="bg-white border border-slate-200 rounded-2xl p-3 space-y-2.5">
@@ -932,27 +1226,20 @@ function SettingsTab({ data, setData, showToast }) {
             <input type="date" value={gEndDate} onChange={(e) => setGEndDate(e.target.value)} className="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm" />
           </div>
         </div>
+        <button onClick={saveGoal} className="w-full bg-teal-700 active:bg-teal-800 text-white font-semibold py-2.5 rounded-lg text-sm">Save goal</button>
         <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5">
           <label className="text-[11px] text-slate-500 block mb-1">Current score (manual override)</label>
           <div className="flex gap-2">
             <input type="number" value={gProgress} onChange={(e) => setGProgress(parseInt(e.target.value) || 0)} className="flex-1 px-2.5 py-2 border border-slate-300 rounded-lg text-sm bg-white" />
-            <button
-              onClick={() => {
-                setData({ ...data, goal: { ...data.goal, earnedPoints: Math.max(0, parseInt(gProgress) || 0) }});
-                showToast("Score updated", "success");
-              }}
-              className="px-3 bg-slate-700 active:bg-slate-800 text-white rounded-lg text-sm font-medium"
-            >Set</button>
+            <button onClick={setScore} className="px-3 bg-slate-700 active:bg-slate-800 text-white rounded-lg text-sm font-medium">Set</button>
           </div>
         </div>
       </section>
 
-      <button onClick={save} className="w-full bg-teal-700 active:bg-teal-800 text-white font-semibold py-3 rounded-xl">Save settings</button>
-
       <section className="bg-rose-50 border border-rose-200 rounded-2xl p-3">
-        <h3 className="font-semibold text-rose-900 text-sm mb-1">Danger zone</h3>
-        <p className="text-[11px] text-rose-700 mb-2">Wipe everything and start fresh.</p>
-        <button onClick={resetAll} className="w-full bg-white border border-rose-300 text-rose-700 active:bg-rose-100 font-semibold py-2 rounded-lg text-sm">Reset all data</button>
+        <h3 className="font-semibold text-rose-900 text-sm mb-1 flex items-center gap-2"><AlertCircle size={16} /> Danger zone</h3>
+        <p className="text-[11px] text-rose-700 mb-2">Permanently delete this child and all their data.</p>
+        <button onClick={confirmDelete} className="w-full bg-white border border-rose-300 text-rose-700 active:bg-rose-100 font-semibold py-2 rounded-lg text-sm">Delete {child.displayName}</button>
       </section>
     </div>
   );
